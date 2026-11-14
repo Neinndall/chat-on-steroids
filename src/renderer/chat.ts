@@ -9198,7 +9198,7 @@ async function refreshInputQueue(): Promise<void> {
       };
       if (entry.recovery) { card.append(cancel); return card; }
       // Like Codex's Steer: send a message that waits for the end of the turn into the turn now.
-      if (entry.mode === 'after-turn' && !entry.attachments?.length && !entry.images?.length && !entry.stages?.length) {
+      if (entry.mode === 'after-turn' && !entry.attachments?.length && !entry.images?.length && !entry.stages?.length && !entry.imageRequest) {
         const now = dockAction(() => t("Send now"), 'i-arrow-up', () => {});
         now.classList.add('queue-send-now');
         ui(now, 'title', () => t("Send into the running turn now"));

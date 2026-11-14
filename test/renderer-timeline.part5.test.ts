@@ -591,6 +591,17 @@ it('says so when a queued message can no longer join the running turn', async ()
   expect(w.document.body.textContent).toContain('The turn ended before this message could join it. It stays queued.');
 });
 
+it('hides Send now on a queued /image follow-up card even while the turn can be joined', async () => {
+  const { w, live, append } = await boot([]);
+  const api = (w as any).api;
+  api.getSessionControls = async () => ({ ok: true, data: { sessionId: summary([]).id,
+    activeTurnId: 'plain-turn', canInject: false, canSendDirectly: true, queueAtFinish: false } });
+  live.inputs.push({ id: 'waiting-image', sessionId: summary([]).id, text: 'Design a logo', imageRequest: true, mode: 'after-turn', dueAt: 0,
+    model: null, reasoningEffort: null, state: 'queued', owner: null, createdAt: 0, conversationId: 'chat-b' });
+  await append([]);
+  expect(w.document.querySelector('#finishQueue .queue-send-now')).toBeNull();
+});
+
 // Codex's Find in chat: ⌘F (Ctrl+F) searches the open chat's whole recording, newest match first.
 it('finds in the open chat with Cmd/Ctrl+F, steps through matches and closes with Escape', async () => {
   const rows: SessionEvent[] = [

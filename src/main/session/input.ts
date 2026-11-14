@@ -1254,6 +1254,7 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
       if (input.delivery === 'tool') delete input.delivery;
       if (policy?.canInject) policy = { ...policy, canInject: false };
     }
+    let pictureDeferred = false;
     const toolDelivery = input.delivery === 'tool' || input.attachmentDelivery === 'tool';
     if (toolDelivery) {
       const turnId = policy?.directTurn?.id ?? policy?.injectionTurnId;
@@ -1269,6 +1270,23 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
       // Native files belong to the next browser message, never a tool-result injection.
       if (finishOwner) throw new Error('Automatic finish messages cannot attach files');
       if (input.mode === 'finish' || (input.mode === 'auto' && (policy?.canInject || policy?.directTurn))) input.mode = 'after-turn';
+    } else if (!scheduled && !finishOwner && !input.stages?.length &&
+        await imageRequestWithoutMention({ ...input, authoredSource: input.authoredSource ?? 'text' }, requestedSession)) {
+      // ChatGPT hides its native image tool inside Core/tool turns; wait for the turn to end so
+      // the picture request opens a clean non-Core turn instead of steering or injecting mid-turn.
+      if (input.mode === 'finish' || (input.mode === 'auto' && (policy?.directTurn || policy?.canInject || policy?.queueAtFinish))) {
+        if (input.mode === 'finish' || queuedTurn) {
+          input.mode = 'after-turn';
+          pictureDeferred = true;
+          logInfo(`input ${input.id}: asks for an image, so it waits for a clean turn after the running one`);
+        } else if (policy?.canInject) {
+          policy = { ...policy, canInject: false };
+          pictureDeferred = true;
+          logInfo(`input ${input.id}: asks for an image, so it skips tool injection and waits for a clean send`);
+        }
+      } else if (input.mode === 'after-turn' && policy?.queueAtFinish) {
+        logInfo(`input ${input.id}: asks for an image, so it stays after this turn instead of Session finish`);
+      }
     } else if (!scheduled && input.mode === 'after-turn' && policy?.queueAtFinish) input.mode = 'finish';
     if (input.mode === 'finish' || input.stages?.length) {
       const session = input.sessionId ? await getSession(input.sessionId) : null;
@@ -1276,7 +1294,7 @@ export function enqueueInput(raw: InputArgs, finishOwner?: InputEntry['finishOwn
     }
     // Unattributed work can fence browser Send without making this chat a tool recipient.
     // Leave that input neutral until the existing serialized claim selects a safe transport.
-    const transportIntent = scheduled ? 'browser' as const : toolDelivery ? 'tool' as const : input.attachments?.length ? 'browser' as const : input.mode === 'auto' && !finishOwner
+    const transportIntent = scheduled ? 'browser' as const : toolDelivery ? 'tool' as const : input.attachments?.length || pictureDeferred ? 'browser' as const : input.mode === 'auto' && !finishOwner
       ? policy?.canInject ? 'tool' as const : !policy || policy.browserAllowed || policy.directTurn ? 'browser' as const : undefined : undefined;
     const directTurn = !scheduled && !toolDelivery && input.mode === 'auto' && !finishOwner && input.dueAt <= Date.now() ? policy?.directTurn : null;
     const entry: InputEntry = { ...input, ...(queuedTurn ? { queuedTurn } : {}), ...(toolImages ? { toolImages } : {}), ...(directTurn ? { directTurn } : {}),
@@ -1615,6 +1633,11 @@ export function sendQueuedInputNow(id: string): Promise<boolean> {
     if (!row) return false;
     const policy = await sessionInputPolicy(row.sessionId!);
     if (!policy.directTurn) return false;
+    const session = await getSession(row.sessionId!);
+    if (await imageRequestWithoutMention(row, session)) {
+      logInfo(`input ${row.id}: asks for an image, so Send now keeps it waiting for a clean turn`);
+      return false;
+    }
     // The person chose immediate delivery for this message; it is no longer an after-turn request.
     const { requestedMode: _requested, silenceBoundary: _silence, ...rest } = row;
     await commit(current.map(entry => entry === row ? { ...rest, mode: 'auto' as const, directTurn: policy.directTurn!, transportIntent: 'browser' as const,
@@ -2637,7 +2660,8 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
       await turnHasMcpCall(session.id, entry.silenceBoundary.conversationId, entry.silenceBoundary.turnId)
       ? ordered(current).find(row => row.sessionId === entry.sessionId && !row.scheduled && queuedFollowup(row) && row.state === 'queued') : undefined;
     let companion = entry.companionInputId ? current.find(row => row.id === entry.companionInputId)
-      : queueHead && session && queuedAfterTurn(queueHead, session) && !queueHead.finishOwner && queueHead.purpose !== 'decision' && queueHead.attachmentDelivery !== 'tool' ? queueHead : undefined;
+      : queueHead && session && queuedAfterTurn(queueHead, session) && !queueHead.finishOwner && queueHead.purpose !== 'decision' && queueHead.attachmentDelivery !== 'tool' &&
+        !await imageRequestWithoutMention(queueHead, session) ? queueHead : undefined;
     if (entry.companionInputId && (!companion || companion.state !== 'browser' || companion.owner !== entry.owner || companion.sessionId !== entry.sessionId)) return null;
     // An optional checkpoint cannot make an otherwise deliverable correction too
     // large. Leave that exact head queued; never skip it to collect a later one.
@@ -2686,12 +2710,14 @@ export function claimBrowserInput(id: string, owner: string, conversationId: str
       ...(withoutMention ? { coreMention: false as const } : {}) };
   });
 }
+type PictureRequestCandidate = Pick<InputEntry, 'purpose' | 'recovery' | 'finishOwner' | 'authoredSource' | 'imageRequest' | 'images' | 'attachments' | 'text'>;
+
 /**
  * The person's own message asking ChatGPT for a picture goes out without the Core mention: ChatGPT
  * switches its image tool off for a message that mentions an app (see image-request.ts). Generated
  * messages (Goal, Loop, recovery, workers, the Goal helper) keep the mention as before.
  */
-async function imageRequestWithoutMention(entry: InputEntry, session: SessionSummary | null, companion?: InputEntry): Promise<boolean> {
+async function imageRequestWithoutMention(entry: PictureRequestCandidate, session: SessionSummary | null, companion?: InputEntry): Promise<boolean> {
   // A combined message also carries the next queued instruction, which may need the app.
   if (companion || entry.purpose === 'decision' || entry.recovery || entry.finishOwner || (entry.authoredSource ?? 'text') !== 'text') return false;
   if (session?.origin?.kind === 'worker' || session?.origin?.kind === 'helper') return false;
@@ -2860,7 +2886,8 @@ export function offerToolInput(sessionId: string | null | undefined, conversatio
       // A message for the running turn goes through the composer only: in a tool result the model
       // never saw it (#1231). If the page cannot take it, it is sent once the turn has ended.
       if (entry.directTurn && entry.state === 'queued') return entry;
-      if (entry.state === 'queued' && entry.delivery !== 'tool' && composerOnlyText(entry, session)) return entry;
+      if (entry.state === 'queued' && entry.delivery !== 'tool' && entry.attachmentDelivery !== 'tool' &&
+          (composerOnlyText(entry, session) || await imageRequestWithoutMention(entry, session))) return entry;
       // ChatGPT may reuse one request id for the whole server turn. Receipt follows
       // the actual invocation start, never a change in that grouping id.
       const received = toolInputReceipt(entry, sessionId, conversationId, startedAt);

@@ -8,7 +8,7 @@ import { flushDurable, initDurableStore, readDurable, resetDurableForTests, writ
 import {
   fileSilenceInput, deferSilenceInput, revokeSilenceInputs, pendingQueuedPickups, inputBeforeGoal, inputArgs, acknowledgeBrowserInput, cancelInput, claimBrowserInput, completeBrowserDecision, deliveryProof, enqueueInput, queuedInputOfferBlocker,
   failBrowserInput, listInputs, offerToolInput as offerToolInputBatch, acknowledgeToolInput, pendingBrowserInputs, requestBrowserDecision, resetInputForTests, configureInputDelivery,
-  authorizeBrowserHelperRetry, pausedBrowserHelpers, hasEligibleToolInput, editQueuedInput, reorderQueuedInputs, setInputAutomation, authorizeBrowserInput, sessionInputPolicy, retryUnclaimedInput,
+  authorizeBrowserHelperRetry, pausedBrowserHelpers, hasEligibleToolInput, editQueuedInput, sendQueuedInputNow, reorderQueuedInputs, setInputAutomation, authorizeBrowserInput, sessionInputPolicy, retryUnclaimedInput,
   noteInputStartupError, fileRotationInput, failBranchInput, BRANCH_ERRORS, holdInputForSendCheck, ownUnsentTexts, noteInputHeld, withdrawOwnContinuesAfterStop, fileRotationContinueAfterStop
 } from '../src/main/session/input.js';
 import type { InputArgs, InputEntry } from '../src/main/session/input.js';
@@ -17,7 +17,7 @@ import * as logger from '../src/main/logger.js';
 import { noteChatOrigin } from '../src/main/session/recorder.js';
 import { resetAutomaticRepliesForTests, takeAutomaticReply } from '../src/main/session/automatic-replies.js';
 import { stageInputAttachment } from '../src/main/session/input-attachments.js';
-import { listUsageSessions, turnHasMcpCall } from '../src/main/session/store.js';
+import { listUsageSessions, readRecentEvents, turnHasMcpCall } from '../src/main/session/store.js';
 import { trackInFlight, emptyEvidence, type CallContext } from '../src/main/mcp/call-context.js';
 import { listSchedules, runDueSchedules, runScheduleNow, saveSchedule } from '../src/main/scheduled-runs.js';
 // Ownership tests inspect messages; batch-specific assertions use the complete delivery below.
@@ -3024,5 +3024,130 @@ describe('withdrawing the app\'s own Continues after a Stop', () => {
     expect(after.get(mine.id)?.state).toBe('queued');
     expect(after.get(authorized.id)?.state).toBe('browser');
     expect(await withdrawOwnContinuesAfterStop(sessionId, 'ended-turn')).toBe(0);
+  });
+});
+
+describe('picture requests during an active turn', () => {
+  it.each([
+    { name: 'natural text', text: 'Crea una imagen para el remodelaje de la fabrica' },
+    { name: '/image flag', text: 'You have the concept, go ahead and design it', imageRequest: true as const }
+  ])('defers $name sent with auto during a running non-Pro turn instead of steering into it', async scenario => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'running-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'running-turn', time: 900 };
+    const row = await enqueueInput(input({ text: scenario.text, ...(scenario.imageRequest ? { imageRequest: scenario.imageRequest } : {}) }));
+    expect(row).toMatchObject({
+      mode: 'after-turn', requestedMode: 'auto', transportIntent: 'browser',
+      queuedTurn: { conversationId: binding.conversationId, turnId: 'running-turn' }
+    });
+    expect(row.directTurn).toBeUndefined();
+    expect(await pendingBrowserInputs()).toEqual([]);
+    expect(await claimBrowserInput(row.id, 'page', binding.conversationId, true)).toBeNull();
+
+    binding.activeTurnId = null;
+    binding.end = { kind: 'turn_end', outcome: 'completed', turnId: 'running-turn', time: 1001 };
+    expect(await pendingBrowserInputs()).toEqual([expect.objectContaining({ id: row.id })]);
+    const claimed = await claimBrowserInput(row.id, 'page', binding.conversationId, true);
+    expect(claimed).toMatchObject({ id: row.id, coreMention: false });
+    expect(claimed?.directTurn).toBeUndefined();
+  });
+
+  it('keeps steering non-picture follow-ups and sending idle picture requests immediately', async () => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'running-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'running-turn', time: 900 };
+    const steer = await enqueueInput(input({ text: 'Check the TypeScript errors instead' }));
+    expect(steer).toMatchObject({ mode: 'auto', transportIntent: 'browser', directTurn: { id: 'running-turn', startedAt: 900 } });
+    expect(await cancelInput(steer.id)).toBe(true);
+
+    binding.activeTurnId = null;
+    binding.end = { kind: 'turn_end', outcome: 'completed', turnId: 'running-turn', time: 1001 };
+    const idlePic = await enqueueInput(input({ text: 'Crea una imagen para la fabrica' }));
+    expect(idlePic).toMatchObject({ mode: 'auto', transportIntent: 'browser' });
+    expect(idlePic.requestedMode).toBeUndefined();
+    expect(await claimBrowserInput(idlePic.id, 'page', binding.conversationId, true)).toMatchObject({ id: idlePic.id, coreMention: false });
+  });
+
+  it('keeps picture requests out of Pro tool injection and Astra Session finish', async () => {
+    binding.model = 'gpt-6-astra'; binding.activeTurnId = 'astra-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'astra-turn', time: 900 };
+    const fromAuto = await enqueueInput(input({ text: 'Create a pixel art factory tileset' }));
+    const fromAfterTurn = await enqueueInput(input({ mode: 'after-turn', text: 'Draw the conveyor sprite' }));
+    const fromFinish = await enqueueInput(input({ mode: 'finish', text: 'Design a shop icon', imageRequest: true }));
+    expect(fromAuto).toMatchObject({ mode: 'after-turn', requestedMode: 'auto', transportIntent: 'browser' });
+    expect(fromAfterTurn).toMatchObject({ mode: 'after-turn' });
+    expect(fromFinish).toMatchObject({ mode: 'after-turn', requestedMode: 'finish', transportIntent: 'browser' });
+    expect(await offerToolInput(sessionId, binding.conversationId, 'active-call', now)).toEqual([]);
+    expect(await offerToolInput(sessionId, binding.conversationId, 'finish-call', now, true)).toEqual([]);
+
+    binding.activeTurnId = null;
+    binding.end = { kind: 'turn_end', outcome: 'completed', turnId: 'astra-turn', time: 1001 };
+    const claim = await claimBrowserInput(fromAuto.id, 'page', binding.conversationId, true);
+    expect(claim).toMatchObject({ id: fromAuto.id, coreMention: false });
+  });
+
+  it('skips tool injection without stalling when browser activity lacks a recorded turnId', async () => {
+    let active = true;
+    configureInputDelivery({ applyAutomation: automate, changed, activity: () => ({ possible: active, exact: active }) });
+    binding.model = 'gpt-6-astra'; binding.activeTurnId = null;
+    const row = await enqueueInput(input({ text: 'Create a neon warehouse banner' }));
+    expect(row.mode).toBe('auto');
+    expect(row.transportIntent).not.toBe('tool');
+    expect(await offerToolInput(sessionId, binding.conversationId, 'unattributed-call', now)).toEqual([]);
+    expect(await pendingBrowserInputs()).toEqual([]);
+
+    active = false;
+    expect(await pendingBrowserInputs()).toEqual([expect.objectContaining({ id: row.id })]);
+    expect(await claimBrowserInput(row.id, 'page', binding.conversationId, true)).toMatchObject({ id: row.id, coreMention: false });
+  });
+
+  it('refuses sendQueuedInputNow for a queued picture request until edited to non-picture text', async () => {
+    binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'running-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'running-turn', time: 900 };
+    const byFlag = await enqueueInput(input({ mode: 'after-turn', text: 'You have the concept, design it', imageRequest: true }));
+    const byText = await enqueueInput(input({ mode: 'after-turn', text: 'Draw a factory isometric sprite' }));
+    expect(await sendQueuedInputNow(byFlag.id)).toBe(false);
+    expect(await sendQueuedInputNow(byText.id)).toBe(false);
+    expect((await listInputs()).find(entry => entry.id === byFlag.id)).toMatchObject({ mode: 'after-turn' });
+    expect((await listInputs()).find(entry => entry.id === byText.id)).toMatchObject({ mode: 'after-turn' });
+
+    expect(await editQueuedInput(byText.id, 'Just run the unit tests first')).toBe(true);
+    expect(await sendQueuedInputNow(byText.id)).toBe(true);
+    expect((await listInputs()).find(entry => entry.id === byText.id)).toMatchObject({ mode: 'auto', directTurn: { id: 'running-turn' } });
+  });
+
+  it('defers short image-edit follow-ups right after a generated picture during an active turn', async () => {
+    const baseImpl = vi.mocked(readRecentEvents).getMockImplementation()!;
+    vi.mocked(readRecentEvents).mockImplementation(async (id, limit, filter) =>
+      filter?.kinds?.includes('native_image')
+        ? [{ kind: 'user_message', time: 100 }, { kind: 'native_image', providerStatus: 'completed', time: 200 }] as never
+        : baseImpl(id, limit, filter));
+    try {
+      binding.model = 'gpt-5.6-sol'; binding.activeTurnId = 'running-turn';
+      binding.end = { kind: 'turn_start', outcome: '', turnId: 'running-turn', time: 900 };
+      const followUp = await enqueueInput(input({ text: 'Make it brighter' }));
+      expect(followUp).toMatchObject({ mode: 'after-turn', requestedMode: 'auto', transportIntent: 'browser' });
+      expect(followUp.directTurn).toBeUndefined();
+
+      binding.activeTurnId = null;
+      binding.end = { kind: 'turn_end', outcome: 'completed', turnId: 'running-turn', time: 1001 };
+      expect(await claimBrowserInput(followUp.id, 'page', binding.conversationId, true)).toMatchObject({ id: followUp.id, coreMention: false });
+    } finally {
+      vi.mocked(readRecentEvents).mockImplementation(baseImpl);
+    }
+  });
+
+  it('does not fold a queued picture request as companion onto a silent-stop retry', async () => {
+    binding.model = 'gpt-6-pro'; binding.finishEnabled = false;
+    binding.activeTurnId = 'silent-turn';
+    binding.end = { kind: 'turn_start', outcome: '', turnId: 'silent-turn', time: now, seq: 11 };
+    const pic = await enqueueInput(input({ mode: 'after-turn', text: 'Create a logo for the game' }));
+    binding.activeTurnId = null;
+    binding.end = { kind: 'turn_end', outcome: 'failed', reason: 'thinking_failed', turnId: 'silent-turn', time: now, seq: 12 };
+    const retry = await enqueueInput(input({ text: 'Continue with the audit' }));
+    await fileSilenceInput(sessionId, binding.conversationId, 'silent-turn', () => true, now + 300_000);
+    now += 300_000;
+    const claim = await claimBrowserInput(retry.id, 'page', binding.conversationId, true);
+    expect(claim).toMatchObject({ id: retry.id, text: retry.text });
+    expect(claim?.companionInputId).toBeUndefined();
+    expect((await listInputs()).find(row => row.id === pic.id)?.state).toBe('queued');
   });
 });
