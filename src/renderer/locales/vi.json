@@ -3955,5 +3955,7 @@
   "This chat": "Cuộc trò chuyện này",
   "Freed {0} MB from this chat. {1} MB of {2} MB is now used here.": "Đã giải phóng {0} MB khỏi cuộc trò chuyện này. Hiện đang dùng {1} MB / {2} MB.",
   "Freed {0} MB. Storage usage could not be read.": "Đã giải phóng {0} MB. Không đọc được dung lượng sử dụng.",
-  "Last cleanup: Freed {0} MB.": "Lần dọn dẹp gần nhất: Đã giải phóng {0} MB."
+  "Last cleanup: Freed {0} MB.": "Lần dọn dẹp gần nhất: Đã giải phóng {0} MB.",
+  "Steered active turn": "Đã điều hướng lượt đang hoạt động",
+  "Worked for {0}{1}s · steered": "Đã làm việc trong {0}{1} giây · đã điều hướng"
 }

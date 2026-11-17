@@ -4039,5 +4039,7 @@
   "This chat": "Dieser Chat",
   "Freed {0} MB from this chat. {1} MB of {2} MB is now used here.": "{0} MB aus diesem Chat freigegeben. Jetzt werden hier {1} MB von {2} MB verwendet.",
   "Freed {0} MB. Storage usage could not be read.": "{0} MB freigegeben. Die Speichernutzung konnte nicht gelesen werden.",
-  "Last cleanup: Freed {0} MB.": "Letzte Bereinigung: {0} MB freigegeben."
+  "Last cleanup: Freed {0} MB.": "Letzte Bereinigung: {0} MB freigegeben.",
+  "Steered active turn": "Laufenden Durchlauf umgelenkt",
+  "Worked for {0}{1}s · steered": "Gearbeitet · {0}{1} s · umgelenkt"
 }

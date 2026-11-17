@@ -3955,5 +3955,7 @@
   "This chat": "このチャット",
   "Freed {0} MB from this chat. {1} MB of {2} MB is now used here.": "このチャットから {0} MB を解放しました。現在の使用量は {1} MB / {2} MB です。",
   "Freed {0} MB. Storage usage could not be read.": "{0} MB を解放しました。ストレージの使用量を読み取れませんでした。",
-  "Last cleanup: Freed {0} MB.": "前回のクリーンアップ: {0} MB を解放しました。"
+  "Last cleanup: Freed {0} MB.": "前回のクリーンアップ: {0} MB を解放しました。",
+  "Steered active turn": "実行中のターンを方向転換",
+  "Worked for {0}{1}s · steered": "作業済み · {0}{1}秒 · 方向転換"
 }

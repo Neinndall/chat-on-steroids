@@ -4123,5 +4123,7 @@
   "This chat": "Ce chat",
   "Freed {0} MB from this chat. {1} MB of {2} MB is now used here.": "{0} Mo libérés de ce chat. {1} Mo sur {2} Mo sont maintenant utilisés ici.",
   "Freed {0} MB. Storage usage could not be read.": "{0} Mo libérés. L'utilisation du stockage n'a pas pu être lue.",
-  "Last cleanup: Freed {0} MB.": "Dernier nettoyage : {0} Mo libérés."
+  "Last cleanup: Freed {0} MB.": "Dernier nettoyage : {0} Mo libérés.",
+  "Steered active turn": "A réorienté le tour actif",
+  "Worked for {0}{1}s · steered": "A travaillé pendant {0}{1} s · réorienté"
 }

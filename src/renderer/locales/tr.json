@@ -4039,5 +4039,7 @@
   "This chat": "Bu sohbet",
   "Freed {0} MB from this chat. {1} MB of {2} MB is now used here.": "Bu sohbetten {0} MB alan açıldı. Burada şimdi {1} MB / {2} MB kullanılıyor.",
   "Freed {0} MB. Storage usage could not be read.": "{0} MB alan açıldı. Depolama kullanımı okunamadı.",
-  "Last cleanup: Freed {0} MB.": "Son temizleme: {0} MB alan açıldı."
+  "Last cleanup: Freed {0} MB.": "Son temizleme: {0} MB alan açıldı.",
+  "Steered active turn": "Etkin turu yönlendirdi",
+  "Worked for {0}{1}s · steered": "{0}{1} sn · Çalıştı · yönlendirildi"
 }
