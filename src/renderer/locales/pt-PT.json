@@ -4125,5 +4125,7 @@
   "Freed {0} MB. Storage usage could not be read.": "Foram libertados {0} MB. Não foi possível ler a utilização do armazenamento.",
   "Last cleanup: Freed {0} MB.": "Última limpeza: foram libertados {0} MB.",
   "Steered active turn": "Reencaminhou o turno ativo",
-  "Worked for {0}{1}s · steered": "Trabalhou durante {0}{1}s · reencaminhado"
+  "Worked for {0}{1}s · steered": "Trabalhou durante {0}{1}s · reencaminhado",
+  "Sync manual chat titles to ChatGPT": "Sincronizar títulos manuais de chat com o ChatGPT",
+  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Enviar para o ChatGPT Web os títulos renomeados aqui (incluindo ao usar Compactar e retomar), a menos que o ChatGPT já tenha um título mais recente."
 }

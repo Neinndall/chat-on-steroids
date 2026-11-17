@@ -8441,7 +8441,8 @@ export function chatSettingsPatch(current: Config): {
       limitTokens: urgentFrom(threshold),
       storageLimitGiB: (RECORDING_STORAGE_LIMITS_GIB as readonly number[]).includes(Number($<HTMLSelectElement>('recordingStorageLimit').value))
         ? Number($<HTMLSelectElement>('recordingStorageLimit').value) as RecordingStorageLimitGiB
-        : current.sessions.storageLimitGiB ?? DEFAULT_RECORDING_STORAGE_GIB
+        : current.sessions.storageLimitGiB ?? DEFAULT_RECORDING_STORAGE_GIB,
+      syncManualChatTitles: $<HTMLInputElement>('syncManualChatTitles').checked
     },
     compaction: {
       auto: $<HTMLInputElement>('autoCompact').checked,
@@ -8927,6 +8928,7 @@ const CHAT_INPUTS = [
   'handoffPrompt',
   'handoffLength',
   'recordingStorageLimit',
+  'syncManualChatTitles',
   'goalPrompt',
   'goalObjectivePrompt',
   'goalLoopPrompt',
@@ -9021,6 +9023,11 @@ export function chatApply(state: AppState, previous?: Config): void {
     $<HTMLSelectElement>('recordingStorageLimit'),
     String(config.sessions.storageLimitGiB ?? DEFAULT_RECORDING_STORAGE_GIB),
     previous === undefined ? undefined : String(previous.sessions.storageLimitGiB ?? DEFAULT_RECORDING_STORAGE_GIB)
+  );
+  applyChatChecked(
+    $<HTMLInputElement>('syncManualChatTitles'),
+    config.sessions.syncManualChatTitles === true,
+    previous?.sessions.syncManualChatTitles
   );
   applyAutoCompactHint(config);
   $<HTMLInputElement>('autoCompactTokens').disabled = !config.compaction.auto;

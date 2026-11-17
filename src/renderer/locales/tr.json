@@ -4041,5 +4041,7 @@
   "Freed {0} MB. Storage usage could not be read.": "{0} MB alan açıldı. Depolama kullanımı okunamadı.",
   "Last cleanup: Freed {0} MB.": "Son temizleme: {0} MB alan açıldı.",
   "Steered active turn": "Etkin turu yönlendirdi",
-  "Worked for {0}{1}s · steered": "{0}{1} sn · Çalıştı · yönlendirildi"
+  "Worked for {0}{1}s · steered": "{0}{1} sn · Çalıştı · yönlendirildi",
+  "Sync manual chat titles to ChatGPT": "Elle değiştirilen sohbet başlıklarını ChatGPT ile eşitle",
+  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Burada yeniden adlandırdığınız başlıkları (Sıkıştır ve sürdür sonrasında da) ChatGPT Web’e gönderir; ancak ChatGPT’de zaten daha yeni bir başlık varsa üzerine yazmaz."
 }
