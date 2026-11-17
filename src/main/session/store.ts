@@ -33,6 +33,7 @@ import type {
   ImageStorageClearResult,
   ImageStorageInfo,
   NewSessionEvent,
+  SessionImageStorageInfo,
   ReasoningEffort,
   SessionEvent,
   SessionOrigin,
@@ -328,6 +329,46 @@ function deniedAssetIds(sessionId: string, assets: readonly AssetRef[] | undefin
   if (!assets) return [];
   const admitted = new Set(admittedAssets(sessionId, assets)?.map((asset) => asset.id));
   return assets.filter((asset) => !admitted.has(asset.id)).map((asset) => asset.id);
+}
+
+function overflowTextAssetId(text: string): string {
+  return `${createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex').slice(0, 32)}.txt`;
+}
+
+function retireTextField(
+  stored: StoredText,
+  retired: ReadonlySet<string>
+): { stored: StoredText; retiredIds: string[] } {
+  if (!stored.assetId || !retired.has(stored.assetId)) return { stored, retiredIds: [] };
+  const retiredId = stored.assetId;
+  const { assetId: _assetId, ...rest } = stored;
+  return {
+    stored: {
+      ...rest,
+      text: stored.text.replace(
+        `more characters stored in full as ${retiredId}]`,
+        'more characters removed to free storage]'
+      )
+    },
+    retiredIds: [retiredId]
+  };
+}
+
+/** True when a keyed message's overflow `.txt` asset was explicitly retired by cleanup. */
+export async function isRetiredMessageText(
+  sessionId: string,
+  kind: 'user_message' | 'assistant_message',
+  messageId: string,
+  text: string
+): Promise<boolean> {
+  if (text.length > MAX_OVERFLOW_ASSET_CHARS) return false;
+  const key = messageKey({ kind, messageId } as CanonicalEvent);
+  if (!key) return false;
+  const entry = await ensureOpen(sessionId);
+  const previous = entry.messages.get(key);
+  if (!previous || (previous.kind !== 'user_message' && previous.kind !== 'assistant_message')) return false;
+  if (!previous.retiredTextAssetIds?.length) return false;
+  return previous.retiredTextAssetIds.includes(overflowTextAssetId(text));
 }
 
 function mergedRetiredAssetIds(...groups: Array<readonly string[] | undefined>): string[] | undefined {
@@ -1476,28 +1517,68 @@ export function upsertMessageEvent(
         return { event: previous, changed: false, contentChanged: false };
       }
 
+      const retiredIds =
+        previous?.kind === 'user_message' || previous?.kind === 'assistant_message'
+          ? previous.retiredTextAssetIds
+          : undefined;
+      const incomingTextAssets: AssetRef[] = [
+        ...(event.message.assetId ? [{ id: event.message.assetId, mimeType: 'text/plain', bytes: 0 }] : []),
+        ...(event.kind === 'assistant_message' && event.renderedHtml?.assetId
+          ? [{ id: event.renderedHtml.assetId, mimeType: 'text/plain', bytes: 0 }]
+          : [])
+      ];
+      const epochDeniedTextIds = deniedAssetIds(sessionId, incomingTextAssets);
+      const retiredSet = retiredIds?.length || epochDeniedTextIds.length
+        ? new Set([...(retiredIds ?? []), ...epochDeniedTextIds])
+        : null;
+      const sanitizedMessage = retiredSet ? retireTextField(event.message, retiredSet) : { stored: event.message, retiredIds: [] };
+      const sanitizedHtml =
+        event.kind === 'assistant_message' && event.renderedHtml
+          ? (retiredSet ? retireTextField(event.renderedHtml, retiredSet) : { stored: event.renderedHtml, retiredIds: [] })
+          : null;
+      const mergedRetiredTextIds = mergedRetiredAssetIds(
+        retiredIds,
+        event.retiredTextAssetIds,
+        epochDeniedTextIds,
+        sanitizedMessage.retiredIds,
+        sanitizedHtml?.retiredIds
+      );
+      const normalizedEvent: NewMessageEvent =
+        event.kind === 'assistant_message'
+          ? {
+              ...event,
+              message: sanitizedMessage.stored,
+              ...(sanitizedHtml ? { renderedHtml: sanitizedHtml.stored } : {}),
+              ...(mergedRetiredTextIds ? { retiredTextAssetIds: mergedRetiredTextIds } : {})
+            }
+          : {
+              ...event,
+              message: sanitizedMessage.stored,
+              ...(mergedRetiredTextIds ? { retiredTextAssetIds: mergedRetiredTextIds } : {})
+            };
+
       // Message bodies can be hundreds of kilobytes. The old path JSON.stringify-compared the
       // same StoredText pair once while preserving rendered HTML and then again while deciding
       // whether the observation changed at all. StoredText has a fixed five-field shape, so a
       // direct comparison is exact and avoids repeated full-string serialisation/allocation on
       // every streaming observation.
       const sameMessage =
-        previous?.kind === event.kind && storedTextEqual(previous.message, event.message);
+        previous?.kind === normalizedEvent.kind && storedTextEqual(previous.message, normalizedEvent.message);
 
       const nextEvent: NewMessageEvent =
-        previous?.kind === 'assistant_message' && event.kind === 'assistant_message'
+        previous?.kind === 'assistant_message' && normalizedEvent.kind === 'assistant_message'
           ? {
-              ...event,
+              ...normalizedEvent,
               // The producer already supplied the stable website identity. Keep that exact
               // identity through every revision; a different id is a different logical row.
               messageId: previous.messageId,
-              authoredAt: authoredTimeOf(previous) ?? event.authoredAt,
-              providerMessageId: event.providerMessageId ?? previous.providerMessageId,
-              resolvedModel: event.resolvedModel ?? previous.resolvedModel,
-              references: event.references ?? previous.references,
+              authoredAt: authoredTimeOf(previous) ?? normalizedEvent.authoredAt,
+              providerMessageId: normalizedEvent.providerMessageId ?? previous.providerMessageId,
+              resolvedModel: normalizedEvent.resolvedModel ?? previous.resolvedModel,
+              references: normalizedEvent.references ?? previous.references,
               // `final` is a compatibility mirror of state, not an independent truth.
-              state: continuing || event.state === 'final' || event.final === true ? 'final' : 'streaming',
-              final: continuing || event.state === 'final' || event.final === true,
+              state: continuing || normalizedEvent.state === 'final' || normalizedEvent.final === true ? 'final' : 'streaming',
+              final: continuing || normalizedEvent.state === 'final' || normalizedEvent.final === true,
               // Goal eligibility is an accepted fact about this stable reply, not a property a
               // later sparse page snapshot may retract. This is what makes a 503/reload replay
               // re-offer the same durable obligation instead of silently dropping it.
@@ -1506,42 +1587,48 @@ export function upsertMessageEvent(
               // representation we already captured. If the prose itself changed, omitting
               // HTML deliberately falls back to the new plain text instead of showing stale
               // markup for different content.
-              ...(event.renderedHtml === undefined && sameMessage
+              ...(normalizedEvent.renderedHtml === undefined && sameMessage
                 ? { renderedHtml: previous.renderedHtml }
+                : {}),
+              ...(mergedRetiredAssetIds(previous.retiredTextAssetIds, normalizedEvent.retiredTextAssetIds)
+                ? { retiredTextAssetIds: mergedRetiredAssetIds(previous.retiredTextAssetIds, normalizedEvent.retiredTextAssetIds) }
                 : {})
             }
-          : previous?.kind === 'user_message' && event.kind === 'user_message'
-            ? { ...event, inputId: event.inputId ?? previous.inputId,
-                ...(event.scheduled ?? previous.scheduled ? { scheduled: event.scheduled ?? previous.scheduled } : {}),
-                ...(event.via ?? previous.via ? { via: event.via ?? previous.via } : {}),
-                authoredAt: previous.authoredAt ?? event.authoredAt,
-                authoredText: event.authoredText ?? previous.authoredText,
-                wireTokenEstimate: event.wireTokenEstimate ?? previous.wireTokenEstimate,
-                reaction: event.reaction === undefined ? previous.reaction : event.reaction,
+          : previous?.kind === 'user_message' && normalizedEvent.kind === 'user_message'
+            ? { ...normalizedEvent, inputId: normalizedEvent.inputId ?? previous.inputId,
+                ...(normalizedEvent.scheduled ?? previous.scheduled ? { scheduled: normalizedEvent.scheduled ?? previous.scheduled } : {}),
+                ...(normalizedEvent.via ?? previous.via ? { via: normalizedEvent.via ?? previous.via } : {}),
+                authoredAt: previous.authoredAt ?? normalizedEvent.authoredAt,
+                authoredText: normalizedEvent.authoredText ?? previous.authoredText,
+                wireTokenEstimate: normalizedEvent.wireTokenEstimate ?? previous.wireTokenEstimate,
+                reaction: normalizedEvent.reaction === undefined ? previous.reaction : normalizedEvent.reaction,
                 // Where it sits in ChatGPT's tree, and which version it replaced, do not change once known.
-                parentId: previous.parentId ?? event.parentId,
+                parentId: previous.parentId ?? normalizedEvent.parentId,
                 replaces: previous.replacesConfirmed === true ? previous.replaces
-                  : event.replacesConfirmed === true ? event.replaces : previous.replaces ?? event.replaces,
-                ...(previous.replacesConfirmed === true || event.replacesConfirmed === true ? { replacesConfirmed: true as const } : {}),
-                automatic: previous.automatic ?? event.automatic,
+                  : normalizedEvent.replacesConfirmed === true ? normalizedEvent.replaces : previous.replaces ?? normalizedEvent.replaces,
+                ...(previous.replacesConfirmed === true || normalizedEvent.replacesConfirmed === true ? { replacesConfirmed: true as const } : {}),
+                automatic: previous.automatic ?? normalizedEvent.automatic,
                 // App-owned originals/previews retain their outbox identity when the
                 // provider later observes different native attachment ids for that send.
-                attachments: previous.inputId ? previous.attachments ?? event.attachments : event.attachments ?? previous.attachments,
-                inputDelivery: previous.inputDelivery === 'confirmed' ? 'confirmed' : event.inputDelivery ?? previous.inputDelivery,
-                model: event.model ?? previous.model,
-                reasoningEffort: event.reasoningEffort ?? previous.reasoningEffort,
+                attachments: previous.inputId ? previous.attachments ?? normalizedEvent.attachments : normalizedEvent.attachments ?? previous.attachments,
+                inputDelivery: previous.inputDelivery === 'confirmed' ? 'confirmed' : normalizedEvent.inputDelivery ?? previous.inputDelivery,
+                model: normalizedEvent.model ?? previous.model,
+                reasoningEffort: normalizedEvent.reasoningEffort ?? previous.reasoningEffort,
                 retiredImageAssetIds: mergedRetiredAssetIds(previous.retiredImageAssetIds,
-                  deniedAssetIds(sessionId, event.assets ?? previous.assets)),
+                  deniedAssetIds(sessionId, normalizedEvent.assets ?? previous.assets)),
+                ...(mergedRetiredAssetIds(previous.retiredTextAssetIds, normalizedEvent.retiredTextAssetIds)
+                  ? { retiredTextAssetIds: mergedRetiredAssetIds(previous.retiredTextAssetIds, normalizedEvent.retiredTextAssetIds) }
+                  : {}),
                 assets: admittedAssets(sessionId,
-                  retainedAssets(event.assets ?? previous.assets, previous.retiredImageAssetIds)) }
-            : event.kind === 'user_message'
+                  retainedAssets(normalizedEvent.assets ?? previous.assets, previous.retiredImageAssetIds)) }
+            : normalizedEvent.kind === 'user_message'
               ? {
-                  ...event,
-                  retiredImageAssetIds: mergedRetiredAssetIds(event.retiredImageAssetIds,
-                    deniedAssetIds(sessionId, event.assets)),
-                  assets: admittedAssets(sessionId, event.assets)
+                  ...normalizedEvent,
+                  retiredImageAssetIds: mergedRetiredAssetIds(normalizedEvent.retiredImageAssetIds,
+                    deniedAssetIds(sessionId, normalizedEvent.assets)),
+                  assets: admittedAssets(sessionId, normalizedEvent.assets)
                 }
-              : event;
+              : normalizedEvent;
       // A canonical assistant message belongs to exactly one generation permanently. Ownership
       // may still be *promoted* from "not known yet" to a durable generation id when the
       // recorder learns it late, but a settled assistant answer may never move to another turn.
@@ -1581,6 +1668,7 @@ export function upsertMessageEvent(
           (nextEvent.reaction === previous.reaction && nextEvent.parentId === previous.parentId && nextEvent.replaces === previous.replaces && nextEvent.replacesConfirmed === previous.replacesConfirmed && nextEvent.automatic === previous.automatic && nextEvent.inputId === previous.inputId && nextEvent.authoredText === previous.authoredText && nextEvent.wireTokenEstimate === previous.wireTokenEstimate && nextEvent.inputDelivery === previous.inputDelivery && JSON.stringify(nextEvent.assets) === JSON.stringify(previous.assets) && JSON.stringify(nextEvent.retiredImageAssetIds) === JSON.stringify(previous.retiredImageAssetIds) && JSON.stringify(nextEvent.attachments) === JSON.stringify(previous.attachments))) &&
         (previous.turnId ?? undefined) === settledTurnId &&
         (nextEvent.agent === undefined || previous.agent === nextEvent.agent) &&
+        JSON.stringify(nextEvent.retiredTextAssetIds) === JSON.stringify(previous.retiredTextAssetIds) &&
         (!preferTime || previous.time === nextEvent.time)
       ) {
         return { event: previous, changed: false, contentChanged: false };
@@ -4398,7 +4486,10 @@ async function inspectVerifiedAssetFile(directory: VerifiedAssetsDirectory, name
 }
 
 /** Exact physical quota inventory. Directory entries, not caller paths, define the scope. */
-async function imageStorageInventory(collectImages = true): Promise<{ usedBytes: number; images: StoredImageFile[]; texts: StoredImageFile[] }> {
+async function imageStorageInventory(
+  collectImages = true,
+  onlySessionId?: string
+): Promise<{ usedBytes: number; images: StoredImageFile[]; texts: StoredImageFile[] }> {
   assertReady();
   let usedBytes = 0;
   const images: StoredImageFile[] = [];
@@ -4408,13 +4499,16 @@ async function imageStorageInventory(collectImages = true): Promise<{ usedBytes:
   try {
     const rootStat = await fs.lstat(root);
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-      sessionAssetUsage.clear();
-      globalAssetUsage = 0;
+      if (!onlySessionId) {
+        sessionAssetUsage.clear();
+        globalAssetUsage = 0;
+      }
       return { usedBytes: 0, images: [], texts: [] };
     }
     sessions = await fs.opendir(root);
     for await (const session of sessions) {
       if (!session.isDirectory() || !/^[0-9a-z-]{8,64}$/i.test(session.name)) continue;
+      if (onlySessionId && session.name !== onlySessionId) continue;
       const assetsDir = await verifiedAssetsDirectory(session.name);
       if (!assetsDir) continue;
       let entries: Awaited<ReturnType<typeof fs.opendir>> | null = null;
@@ -4439,8 +4533,8 @@ async function imageStorageInventory(collectImages = true): Promise<{ usedBytes:
           if (!file) continue;
           sessionBytes += file.bytes;
           const { image: _image, ...stored } = file;
-          if (file.image) images.push({ sessionId: session.name, assetId: entry.name, ...stored });
-          else if (entry.name.endsWith('.txt')) texts.push({ sessionId: session.name, assetId: entry.name, ...stored, text: true });
+          if (entry.name.toLowerCase().endsWith('.txt')) texts.push({ sessionId: session.name, assetId: entry.name, ...stored, text: true });
+          else if (file.image) images.push({ sessionId: session.name, assetId: entry.name, ...stored });
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -4455,14 +4549,16 @@ async function imageStorageInventory(collectImages = true): Promise<{ usedBytes:
   } finally {
     await sessions?.close().catch(() => undefined);
   }
-  sessionAssetUsage.clear();
-  for (const [sessionId, bytes] of usage) sessionAssetUsage.set(sessionId, bytes);
-  globalAssetUsage = usedBytes;
+  if (!onlySessionId) {
+    sessionAssetUsage.clear();
+    for (const [sessionId, bytes] of usage) sessionAssetUsage.set(sessionId, bytes);
+    globalAssetUsage = usedBytes;
+  }
   return { usedBytes, images, texts };
 }
 
 function sameStoredImage(file: StoredImageFile, observed: VerifiedAssetFile): boolean {
-  return observed.image === !file.text && observed.dev === file.dev && observed.ino === file.ino && observed.bytes === file.bytes;
+  return (file.text || observed.image) && observed.dev === file.dev && observed.ino === file.ino && observed.bytes === file.bytes;
 }
 
 /**
@@ -4534,16 +4630,20 @@ function retireImageReferences(event: CanonicalEvent, selected: ReadonlySet<stri
   return { ...event, call: { ...event.call, assets: retainedAssets(event.call.assets, retiredImageAssetIds), retiredImageAssetIds } };
 }
 
-/** Every long-text file name an event mentions anywhere, including in its prose. */
+/** Every active long-text file name an event mentions anywhere (excluding retirement tombstones). */
 function mentionedTextAssetIds(event: SessionEvent): string[] {
-  return JSON.stringify(event).match(/[0-9a-f]{8,64}\.txt/g) ?? [];
+  const active =
+    event.kind === 'user_message' || event.kind === 'assistant_message'
+      ? { ...event, retiredTextAssetIds: undefined, retiredImageAssetIds: undefined }
+      : event.kind === 'tool_call'
+        ? { ...event, call: { ...event.call, retiredImageAssetIds: undefined } }
+        : event;
+  return JSON.stringify(active).match(/[0-9a-f]{8,64}\.txt/g) ?? [];
 }
 
 /** The head stays; the note says the rest was removed instead of naming a file that is gone. */
 function retireStoredText(stored: StoredText, selected: ReadonlySet<string>): StoredText {
-  if (!stored.assetId || !selected.has(stored.assetId)) return stored;
-  const { assetId, ...rest } = stored;
-  return { ...rest, text: stored.text.replace(`more characters stored in full as ${assetId}]`, 'more characters removed to free storage]') };
+  return retireTextField(stored, selected).stored;
 }
 
 function retireTextReferences(event: CanonicalEvent, selected: ReadonlySet<string>): CanonicalEvent | null {
@@ -4561,10 +4661,14 @@ function retireTextReferences(event: CanonicalEvent, selected: ReadonlySet<strin
     return { ...event, call: { ...event.call, args, result, ...(changes ? { changes } : {}) } };
   }
   if (event.kind !== 'user_message' && event.kind !== 'assistant_message') return null;
-  const message = retireStoredText(event.message, selected);
-  const renderedHtml = event.kind === 'assistant_message' && event.renderedHtml ? retireStoredText(event.renderedHtml, selected) : undefined;
-  if (message === event.message && (event.kind !== 'assistant_message' || renderedHtml === event.renderedHtml)) return null;
-  return event.kind === 'assistant_message' ? { ...event, message, ...(renderedHtml ? { renderedHtml } : {}) } : { ...event, message };
+  const message = retireTextField(event.message, selected);
+  const renderedHtml = event.kind === 'assistant_message' && event.renderedHtml ? retireTextField(event.renderedHtml, selected) : null;
+  const newlyRetired = [...message.retiredIds, ...(renderedHtml?.retiredIds ?? [])];
+  if (!newlyRetired.length) return null;
+  const retiredTextAssetIds = mergedRetiredAssetIds(event.retiredTextAssetIds, newlyRetired);
+  return event.kind === 'assistant_message'
+    ? { ...event, message: message.stored, ...(renderedHtml ? { renderedHtml: renderedHtml.stored } : {}), ...(retiredTextAssetIds ? { retiredTextAssetIds } : {}) }
+    : { ...event, message: message.stored, ...(retiredTextAssetIds ? { retiredTextAssetIds } : {}) };
 }
 
 /**
@@ -4642,18 +4746,55 @@ async function chooseFromOldChats(inventory: { images: StoredImageFile[]; texts:
   return chosen;
 }
 
-export function getImageStorage(): Promise<ImageStorageInfo> {
+/** Metadata-only per-chat asset breakdown so storage dialogs can separate images from long texts. */
+async function sessionAssetBreakdown(sessionId: string): Promise<SessionImageStorageInfo> {
+  assertSessionId(sessionId);
+  const assetsDir = await verifiedAssetsDirectory(sessionId);
+  let imageBytes = 0;
+  let textBytes = 0;
+  if (assetsDir) {
+    let entries: Awaited<ReturnType<typeof fs.opendir>> | null = null;
+    try {
+      entries = await fs.opendir(assetsDir.path);
+      for await (const entry of entries) {
+        if (!entry.isFile() || !/^[0-9a-f]{8,64}\.(?:bin|png|jpg|txt)$/i.test(entry.name)) continue;
+        try {
+          const stat = await fs.lstat(path.join(assetsDir.path, entry.name));
+          if (!stat.isFile() || stat.isSymbolicLink()) continue;
+          if (entry.name.toLowerCase().endsWith('.txt')) textBytes += stat.size;
+          else imageBytes += stat.size;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    } finally {
+      await entries?.close().catch(() => undefined);
+    }
+  }
+  return { sessionId, usedBytes: imageBytes + textBytes, limitBytes: MAX_SESSION_ASSET_BYTES, imageBytes, textBytes };
+}
+
+export function getImageStorage(sessionId?: string): Promise<ImageStorageInfo> {
   return enqueueAssetOperation(async () => {
     assertReady();
     // Asset writes and cleanup already maintain this quota authority under the same queue.
     const usedBytes = globalAssetUsage ?? (await imageStorageInventory(false)).usedBytes;
-    return { usedBytes, limitBytes: globalAssetLimitBytes };
+    if (!sessionId) return { usedBytes, limitBytes: globalAssetLimitBytes };
+    return { usedBytes, limitBytes: globalAssetLimitBytes, session: await sessionAssetBreakdown(sessionId) };
   });
 }
 
 /** Explicit user cleanup. No automatic eviction and no alternate cache can bypass the chosen cap. */
-export async function clearImageStorage(mode: ImageStorageClearMode): Promise<ImageStorageClearResult> {
+export async function clearImageStorage(mode: ImageStorageClearMode, sessionId?: string): Promise<ImageStorageClearResult> {
   assertReady();
+  if (mode === 'session-images' || mode === 'session-texts') {
+    if (!sessionId) throw new Error('Session id required for per-chat cleanup');
+    assertSessionId(sessionId);
+  } else if (sessionId) {
+    assertSessionId(sessionId);
+  }
   // This synchronous edge separates already-admitted writers from writes initiated after the
   // explicit cleanup request, including callers that are still waiting on the asset queue.
   const cleanupEpoch = ++assetMutationEpoch;
@@ -4671,10 +4812,14 @@ export async function clearImageStorage(mode: ImageStorageClearMode): Promise<Im
   // Claim the existing asset queue before inspecting disk. Prior writes finish first; later writes
   // wait until references are retired and selected files are gone.
   const cleanup = enqueueAssetOperation(async () => {
+    const deletedKeys = new Set<string>();
     try {
-      const inventory = await imageStorageInventory();
+      const scopedSessionId = mode === 'session-images' || mode === 'session-texts' ? sessionId : undefined;
+      const inventory = await imageStorageInventory(true, scopedSessionId);
       const chosen: StoredImageFile[] = [];
       if (mode === 'old-chats-gib') chosen.push(...await chooseFromOldChats(inventory));
+      else if (mode === 'session-images') chosen.push(...inventory.images.filter((file) => file.sessionId === sessionId));
+      else if (mode === 'session-texts') chosen.push(...inventory.texts.filter((file) => file.sessionId === sessionId));
       else {
         const ordered = [...inventory.images].sort((left, right) =>
           left.mtimeMs - right.mtimeMs || left.sessionId.localeCompare(right.sessionId) || left.assetId.localeCompare(right.assetId));
@@ -4692,18 +4837,43 @@ export async function clearImageStorage(mode: ImageStorageClearMode): Promise<Im
       let removedFiles = 0;
       for (const file of chosen) {
         const identity = `${file.sessionId}\u0000${file.assetId}`;
-        if (!deletable.has(identity)) continue;
+        const key = localAssetKey(file.sessionId, file.assetId);
+        if (!deletable.has(identity)) {
+          // Cleanup vetoed deletion, so the retained file must remain admissible to concurrent writers.
+          if (removedAssetEpoch.get(key) === cleanupEpoch) removedAssetEpoch.delete(key);
+          continue;
+        }
         const removed = await deleteSelectedImage(file);
         if (!removed) continue;
+        deletedKeys.add(key);
         freedBytes += removed;
         removedFiles += 1;
       }
       sessionAssetUsage.clear();
       globalAssetUsage = null;
-      const after = await imageStorageInventory(false);
-      if (after.usedBytes < globalAssetLimitBytes) setRecordingStoreFull(false);
-      return { freedBytes, removedFiles, usedBytes: after.usedBytes, limitBytes: globalAssetLimitBytes };
+      let usedBytes: number | null = null;
+      try {
+        const after = await imageStorageInventory(false);
+        usedBytes = after.usedBytes;
+        if (usedBytes < globalAssetLimitBytes) setRecordingStoreFull(false);
+      } catch (err) {
+        logWarn(`recording storage cleanup completed, but global recount failed: ${(err as Error).message}`);
+      }
+      if (!sessionId) return { freedBytes, removedFiles, usedBytes, limitBytes: globalAssetLimitBytes };
+      return {
+        freedBytes,
+        removedFiles,
+        usedBytes,
+        limitBytes: globalAssetLimitBytes,
+        session: await sessionAssetBreakdown(sessionId).catch((err) => {
+          logWarn(`session ${sessionId}: post-cleanup breakdown failed: ${(err as Error).message}`);
+          return undefined;
+        })
+      };
     } catch (error) {
+      for (const [key, epoch] of removedAssetEpoch) {
+        if (epoch === cleanupEpoch && !deletedKeys.has(key)) removedAssetEpoch.delete(key);
+      }
       rejectSelection(error);
       throw error;
     }
