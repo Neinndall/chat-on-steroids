@@ -2583,6 +2583,7 @@ async function supersededLineage(conversationId: string): Promise<string | null>
  */
 async function recordSupersededMessages(
   sessionId: string,
+  conversationId: string,
   observations: readonly ChatObservation[]
 ): Promise<number> {
   let stored = 0;
@@ -2605,6 +2606,7 @@ async function recordSupersededMessages(
             kind: 'user_message',
             messageId: item.messageId
           }),
+          ...(conversationId ? { conversationId } : {}),
           ...(item.attachments?.length ? { attachments: item.attachments } : {}),
           ...(item.reaction !== undefined ? { reaction: item.reaction } : {}),
           ...(item.model ? { model: item.model } : {}),
@@ -2665,7 +2667,7 @@ async function recordChatObservationsNow(
   if (!conversations.has(conversationId)) {
     const lineage = await supersededLineage(conversationId);
     if (lineage) {
-      const stored = await recordSupersededMessages(lineage, observations);
+      const stored = await recordSupersededMessages(lineage, conversationId, observations);
       return { sessionId: lineage, stored, activity, goalCandidates: [] };
     }
   }
@@ -2739,6 +2741,7 @@ async function recordChatObservationsNow(
           ...(editReplacement(item.messageId) ? { replaces: editReplacement(item.messageId), replacesConfirmed: true as const }
             : item.parentId && item.parentExact === true ? await replacedQuestion(sessionId, item.messageId, item.parentId) : {}),
           ...(takeAutomaticReply(conversationId, item.text ?? '') ? { automatic: true as const } : {}),
+          ...(conversationId ? { conversationId } : {}),
           messageId: item.messageId
         }, { preferTime: item.authoredTime === true, work: item.authoredNow === true });
         if (live) {

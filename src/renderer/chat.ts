@@ -3336,11 +3336,14 @@ function inputBelongsToCurrentSelection(entry: Pick<InputEntry, 'id' | 'sessionI
     : (entry.sessionId ?? entry.deliveredSessionId) === selectedId;
 }
 
-function pendingComposerInput(): InputEntry | undefined {
-  return [...startingInputs.values(), ...pendingComposerInputs].find(entry =>
-    inputBelongsToCurrentSelection(entry) &&
+function cancellablePendingInput(entry: InputEntry): boolean {
+  return inputBelongsToCurrentSelection(entry) &&
     (!queuedFollowup(entry) || entry.state === 'browser') && ['queued', 'browser'].includes(entry.state) &&
-    !anchoredPendingInput(entry));
+    !anchoredPendingInput(entry);
+}
+
+function pendingComposerInput(): InputEntry | undefined {
+  return [...startingInputs.values(), ...pendingComposerInputs].find(cancellablePendingInput);
 }
 let durationTimer: number | undefined;
 /** Whether the selected chat's running turn takes a message now (Send directly). */
@@ -9390,7 +9393,7 @@ function pageEchoAnchored(entry: InputEntry, all: readonly InputEntry[]): boolea
   if (!selectedId || detailFor !== selectedId || paintedTimelineFor !== selectedId || historyBefore !== null ||
       !inputBelongsToCurrentSelection(entry)) return false;
   const selectedSession = sessions.find(session => session.id === selectedId);
-  if ((selectedSession?.chatIds?.length ?? 0) > 1) return false;
+  const multiChat = (selectedSession?.chatIds?.length ?? 0) > 1;
   if (entry.requiresAuthorization && entry.sendAuthorizedAt === undefined) return false;
   const dispatched = entry.state === 'browser' ||
     (entry.state === 'queued' && !entry.error && !entry.scheduled && !heldBySendCheck(entry) &&
@@ -9410,12 +9413,14 @@ function pageEchoAnchored(entry: InputEntry, all: readonly InputEntry[]): boolea
   const echoMatchesEntry = (event: SessionEvent): event is Extract<SessionEvent, { kind: 'user_message' }> => {
     if (event.kind !== 'user_message' || event.source !== 'extension' || event.inputId || !event.messageId ||
         event.messageId.startsWith('input:') || event.time < minEchoTime) return false;
+    if (multiChat && (!entry.conversationId || event.conversationId !== entry.conversationId)) return false;
+    if (!multiChat && event.conversationId && entry.conversationId && event.conversationId !== entry.conversationId) return false;
     if (entry.edit && event.messageId === entry.edit.messageId) return false;
     if (all.some(other => other.id !== entry.id && other.messageId === event.messageId)) return false;
     for (const [otherId, cached] of pageEchoMatches) {
       if (otherId !== entry.id && cached.sessionId === selectedId && cached.messageId === event.messageId) return false;
     }
-    if (paintedDetailEvents.some(later => later.seq > event.seq && later.kind === 'turn_end' && later.time <= settledBefore)) return false;
+    if (paintedDetailEvents.some(later => positionOf(later) > positionOf(event) && later.kind === 'turn_end' && later.time <= settledBefore)) return false;
     const shown = norm(event.authoredText ?? userPromptText(event.message.text.trimStart()) ?? event.message.text);
     const raw = norm(event.message.text);
     const textMatch = candidates.includes(shown) || candidates.includes(raw);
@@ -9427,8 +9432,12 @@ function pageEchoAnchored(entry: InputEntry, all: readonly InputEntry[]): boolea
         echoMatchesEntry(event) && event.messageId === priorMatch.messageId)
     : undefined;
   if (priorEvent) return true;
+  const sameConversationLaterUser = (event: SessionEvent, later: SessionEvent) =>
+    positionOf(later) > positionOf(event) && later.kind === 'user_message' &&
+    !(later.messageId?.startsWith('input:') && later.time < event.time) &&
+    (!entry.conversationId || !later.conversationId || later.conversationId === entry.conversationId);
   const match = paintedTimelineEvents.find((event): event is Extract<SessionEvent, { kind: 'user_message' }> =>
-    echoMatchesEntry(event) && !paintedTimelineEvents.some(later => later.seq > event.seq && later.kind === 'user_message'));
+    echoMatchesEntry(event) && !paintedDetailEvents.some(later => sameConversationLaterUser(event, later)));
   if (match?.messageId) {
     pageEchoMatches.set(entry.id, { sessionId: selectedId, messageId: match.messageId });
     return true;
@@ -9842,8 +9851,10 @@ async function sendComposer(delivery?: 'finish' | 'auto' | 'after-turn', plan?: 
       if (target) { await stopShownTurn(target, shownTurn, shownConversation, sameSelection); if (sameSelection()) void refreshSessionControls(); }
       return;
     }
-    const pending = shownPendingId ? pendingComposerInput() : undefined;
-    if (pending && pending.id === shownPendingId && ['queued', 'browser'].includes(pending.state)) {
+    const pending = shownPendingId
+      ? [...pendingComposerInputs, ...startingInputs.values()].find(entry => entry.id === shownPendingId)
+      : undefined;
+    if (pending && cancellablePendingInput(pending)) {
       const wasStarting = startingInputs.has(pending.id);
       if (wasStarting) cancelledStarts.add(pending.id);
       const cancelled = await run(api.cancelInput(pending.id));

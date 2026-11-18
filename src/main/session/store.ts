@@ -1631,6 +1631,7 @@ export function upsertMessageEvent(
                   : normalizedEvent.replacesConfirmed === true ? normalizedEvent.replaces : previous.replaces ?? normalizedEvent.replaces,
                 ...(previous.replacesConfirmed === true || normalizedEvent.replacesConfirmed === true ? { replacesConfirmed: true as const } : {}),
                 automatic: previous.automatic ?? normalizedEvent.automatic,
+                ...(previous.conversationId ?? normalizedEvent.conversationId ? { conversationId: previous.conversationId ?? normalizedEvent.conversationId } : {}),
                 // App-owned originals/previews retain their outbox identity when the
                 // provider later observes different native attachment ids for that send.
                 attachments: previous.inputId ? previous.attachments ?? normalizedEvent.attachments : normalizedEvent.attachments ?? previous.attachments,
@@ -1707,7 +1708,7 @@ export function upsertMessageEvent(
             previous.resolvedModel === nextEvent.resolvedModel &&
             JSON.stringify(previous.references) === JSON.stringify(nextEvent.references))) &&
         (nextEvent.kind !== 'user_message' || previous.kind !== 'user_message' ||
-          (nextEvent.reaction === previous.reaction && nextEvent.parentId === previous.parentId && nextEvent.replaces === previous.replaces && nextEvent.replacesConfirmed === previous.replacesConfirmed && nextEvent.automatic === previous.automatic && nextEvent.inputId === previous.inputId && nextEvent.authoredText === previous.authoredText && nextEvent.wireTokenEstimate === previous.wireTokenEstimate && nextEvent.inputDelivery === previous.inputDelivery && JSON.stringify(nextEvent.assets) === JSON.stringify(previous.assets) && JSON.stringify(nextEvent.retiredImageAssetIds) === JSON.stringify(previous.retiredImageAssetIds) && JSON.stringify(nextEvent.attachments) === JSON.stringify(previous.attachments))) &&
+          (nextEvent.reaction === previous.reaction && nextEvent.parentId === previous.parentId && nextEvent.replaces === previous.replaces && nextEvent.replacesConfirmed === previous.replacesConfirmed && nextEvent.automatic === previous.automatic && nextEvent.conversationId === previous.conversationId && nextEvent.inputId === previous.inputId && nextEvent.authoredText === previous.authoredText && nextEvent.wireTokenEstimate === previous.wireTokenEstimate && nextEvent.inputDelivery === previous.inputDelivery && JSON.stringify(nextEvent.assets) === JSON.stringify(previous.assets) && JSON.stringify(nextEvent.retiredImageAssetIds) === JSON.stringify(previous.retiredImageAssetIds) && JSON.stringify(nextEvent.attachments) === JSON.stringify(previous.attachments))) &&
         (previous.turnId ?? undefined) === settledTurnId &&
         (nextEvent.agent === undefined || previous.agent === nextEvent.agent) &&
         JSON.stringify(nextEvent.retiredTextAssetIds) === JSON.stringify(previous.retiredTextAssetIds) &&

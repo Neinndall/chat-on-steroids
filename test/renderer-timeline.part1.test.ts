@@ -1523,14 +1523,73 @@ it('never hides unauthorized browser claims, multi-conversation resumed sessions
   ]);
 });
 
-it('never matches an unattributed echo across conversations on a resumed multi-chat session', async () => {
+it('never matches an unattributed or cross-conversation echo on a multi-chat session, but anchors same-conversation echoes on rotated chats', async () => {
   const { w, live, append } = await boot([
-    { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', messageId: 'old-tab-echo', message: text('Resumed chat prompt') }
-  ], true, [], [], { summary: { chatIds: ['chat-a', 'chat-b'] } });
+    { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', messageId: 'unattributed-echo', message: text('Resumed chat prompt') }
+  ], true, [], [], { summary: { conversationId: 'chat-b', chatIds: ['chat-a', 'chat-b'] } });
   live.inputs.push({ id: 'resumed-pending', sessionId: summary([]).id, state: 'browser', owner: 'page',
     text: 'Resumed chat prompt', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0, createdAt: T0, conversationId: 'chat-b' });
   await append([]);
   expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['resumed-pending']);
+
+  // A cross-conversation echo from an older rotated chat must also remain unanchored.
+  await append([{ seq: 2, time: T0 + 2, source: 'extension', kind: 'user_message', messageId: 'old-tab-echo', conversationId: 'chat-a', message: text('Resumed chat prompt') }]);
+  expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['resumed-pending']);
+
+  // Rotated/compacted session (`chatIds.length > 1`): once the active conversation emits its own attributed echo, it anchors cleanly.
+  await append([{ seq: 3, time: T0 + 3, source: 'extension', kind: 'user_message', messageId: 'active-tab-echo', conversationId: 'chat-b', message: text('Resumed chat prompt') }]);
+  expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')]).toHaveLength(0);
+});
+
+it.each(['chat-a', undefined] as const)('scopes later-question echo check on multi-chat sessions (later conversationId=%s)', async laterConversation => {
+  const { w, live, append } = await boot([
+    { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', messageId: 'active-echo', conversationId: 'chat-b', message: text('Rotated follow-up') },
+    { seq: 2, time: T0 + 2, source: 'extension', kind: 'user_message', messageId: 'later-question',
+      ...(laterConversation ? { conversationId: laterConversation } : {}), message: text('Later other question') }
+  ], true, [], [], { summary: { conversationId: 'chat-b', chatIds: ['chat-a', 'chat-b'] } });
+  live.inputs.push({ id: 'pending-rotated', sessionId: summary([]).id, state: 'browser', owner: 'page',
+    text: 'Rotated follow-up', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0, createdAt: T0, conversationId: 'chat-b' });
+  await append([]);
+  const ids = [...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId);
+  expect(ids).toEqual(laterConversation === 'chat-a' ? [] : ['pending-rotated']);
+});
+
+it('ignores a revision of an older question when choosing the latest echo', async () => {
+  const { w, live, append } = await boot([
+    { seq: 3, origin: 1, time: T0 - 10, source: 'extension', kind: 'user_message', messageId: 'older-revised', conversationId: 'chat-b', message: text('Older question') },
+    { seq: 2, origin: 2, time: T0 + 1, source: 'extension', kind: 'user_message', messageId: 'newer-echo', conversationId: 'chat-b', message: text('New follow-up') }
+  ], true, [], [], { summary: { conversationId: 'chat-b', chatIds: ['chat-b'] } });
+  live.inputs.push({ id: 'pending-origin', sessionId: summary([]).id, state: 'browser', owner: 'page',
+    text: 'New follow-up', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0, createdAt: T0, conversationId: 'chat-b' });
+  await append([]);
+  expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')]).toHaveLength(0);
+});
+
+it('checks unfiltered paintedDetailEvents for later questions when an agent filter hides them', async () => {
+  const { w, live, append } = await boot([
+    { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', agent: 'prime', messageId: 'prime-old', conversationId: 'chat-b', message: text('Filtered prompt') },
+    { seq: 2, time: T0 + 2, source: 'extension', kind: 'user_message', messageId: 'later-unattributed', message: text('Unattributed newer question') }
+  ], true, [], [], { developerMode: true, summary: { conversationId: 'chat-b', chatIds: ['chat-b'] } });
+  w.document.querySelector<HTMLButtonElement>('#chatAgentFilter [data-agent="prime"]')!.click();
+  await settle();
+  live.inputs.push({ id: 'filtered-pending', sessionId: summary([]).id, state: 'browser', owner: 'page',
+    text: 'Filtered prompt', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0, createdAt: T0, conversationId: 'chat-b' });
+  await append([]);
+  expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['filtered-pending']);
+});
+
+it.each([-5, 2] as const)('exempts only older retried synthetic tool-input receipts (%ims) from blocking a matching native echo', async toolDelta => {
+  const { w, live, append } = await boot([], true, [], [], { summary: { conversationId: 'chat-b', chatIds: ['chat-b'] } });
+  live.inputs.push({ id: 'pending-browser', sessionId: summary([]).id, state: 'browser', owner: 'page',
+    text: 'Browser follow-up', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0, createdAt: T0, conversationId: 'chat-b' });
+  await append([]);
+  await waitFor(() => expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['pending-browser']));
+  await append([
+    { seq: 1, time: T0 + 1, source: 'extension', kind: 'user_message', messageId: 'native-echo', conversationId: 'chat-b', message: text('Browser follow-up') },
+    { seq: 2, time: T0 + toolDelta, source: 'app', kind: 'user_message', messageId: 'input:tool-a', inputId: 'tool-a', inputDelivery: 'confirmed', message: text('Tool receipt') }
+  ]);
+  await waitFor(() => expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId))
+    .toEqual(toolDelta < 1 ? [] : ['pending-browser']));
 });
 
 it('keeps echo exclusivity, cross-chat and history-page cache isolation, and Cancel delivery binding across races', async () => {
@@ -1589,9 +1648,21 @@ it('keeps echo exclusivity, cross-chat and history-page cache isolation, and Can
   rowsA.push({ seq: 3, time: T0 + 5, source: 'extension', kind: 'user_message', messageId: 'native-same-2', message: text('Same text') });
   notifySession();
   await waitFor(() => expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['queued-fallback']));
-  releaseClickControls!();
+  (releaseClickControls as (() => void) | null)!();
   await settle();
   expect(cancelledIds).toEqual([]);
+
+  // Clicking Cancel delivery on queued-fallback while another pending input moves ahead of it still cancels queued-fallback directly.
+  await waitFor(() => expect(w.document.getElementById('chatSend')!.getAttribute('aria-label')).toBe('Cancel delivery'));
+  deferNextControlsRead = true;
+  releaseClickControls = null;
+  w.document.getElementById('chatSend')!.click();
+  await waitFor(() => expect(releaseClickControls).not.toBeNull());
+  live.inputs.unshift({ id: 'front-runner', sessionId: firstSession.id, state: 'queued', owner: null, text: 'Prepended earlier', mode: 'auto', model: null, reasoningEffort: null, dueAt: T0 + 9, createdAt: T0 + 9, conversationId: 'chat-a' });
+  notifySession();
+  await waitFor(() => expect([...w.document.querySelectorAll<HTMLElement>('#inputQueue .pending-message')].map(n => n.dataset.inputId)).toEqual(['front-runner', 'queued-fallback']));
+  (releaseClickControls as (() => void) | null)!();
+  await waitFor(() => expect(cancelledIds).toEqual(['queued-fallback']));
 });
 
 it.each([undefined, 4])('never resurrects committed off-page inputs beside genuinely waiting inputs when old timestamps reappear (historySeq=%s)', async historySeq => {
