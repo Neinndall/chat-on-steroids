@@ -545,6 +545,37 @@ describe('explicit CoS sign-in transfer over the paired bridge', () => {
   });
 });
 
+it('offers a one-shot Web title check over the paired bridge and rejects another browser', async () => {
+  await pair();
+  const before = getConfig();
+  const { acceptWebChatTitle, cancelWebChatTitleCheck, readWebChatTitle } = await import('../src/main/web-chat-title.js');
+  const conversationId = randomUUID();
+  const options = { browser: 'titlecheckbrowser001', host: 'browser' };
+  try {
+    await saveConfig({ ...before, ui: { ...before.ui, chatBrowser: 'chrome' },
+      sessions: { ...before.sessions, checkWebChatTitles: true } });
+    const check = readWebChatTitle(conversationId);
+    const body = { openConversations: [conversationId] };
+    await saveConfig({ ...getConfig(), ui: { ...getConfig().ui, chatBrowser: 'firefox' } });
+    expect((await request('POST', '/status', { ...options, body })).body.webChatTitleCheck).toBeUndefined();
+    const firefox = { ...options, browser: 'firefoxtitlebrowser01', engine: 'gecko' };
+    const status = await request('POST', '/status', { ...firefox, body });
+    const offer = status.body.webChatTitleCheck;
+    expect(offer).toEqual({ id: expect.any(String), conversationId });
+    expect((await request('POST', '/status', { ...firefox, body })).body.webChatTitleCheck).toBeUndefined();
+    const answer = { ...offer, title: 'Sample Web title' };
+    expect((await request('POST', '/browser/web-chat-title', { ...firefox, auth: null, body: answer })).status).toBe(401);
+    expect((await request('POST', '/browser/web-chat-title', { ...firefox, browser: 'othercheckbrowser001', body: answer })).status).toBe(409);
+    expect((await request('POST', '/browser/web-chat-title', { ...firefox, engine: undefined, body: answer })).status).toBe(409);
+    expect((await request('POST', '/browser/web-chat-title', { ...firefox, body: answer })).status).toBe(200);
+    await expect(check).resolves.toBe('Sample Web title');
+    expect(acceptWebChatTitle(firefox.browser, answer)).toBe(false);
+  } finally {
+    cancelWebChatTitleCheck();
+    await saveConfig(before);
+  }
+});
+
 describe('direct browser control over the paired bridge', () => {
   it('recovers request-owned browser tabs only from exact server-side correlation, including a resumed session', async () => {
     browserControl.reset(); await pair();
@@ -618,6 +649,48 @@ describe('direct browser control over the paired bridge', () => {
 });
 
 describe('who is allowed to talk to it', () => {
+  // 2026-11-20: the request window opened at a clock reading that was later corrected backwards (a
+  // wrong clock set right, a resumed VM). `now - start` stayed negative, the window never closed,
+  // and every later request counted against it until the clock caught up: the extension got 429 for
+  // as long as the correction was big.
+  it('does not lock the extension out when the clock is corrected backwards', async () => {
+    await pair();
+    const logger = await import('../src/main/logger.js');
+    const info = vi.spyOn(logger, 'logInfo');
+    const real = Date.now();
+    let now = real + 60 * 60_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      expect((await request('GET', '/status')).status).toBe(200);
+      now = real;
+      // Three minutes of ordinary traffic (400 a minute, 1,200 in all) after the correction.
+      const statuses = new Set<number>();
+      for (let minute = 0; minute < 3; minute += 1) {
+        for (let index = 0; index < 400; index += 1) statuses.add((await request('GET', '/status')).status);
+        now += 61_000;
+      }
+      expect([...statuses]).toEqual([200]);
+      // One line says why the count started again, not one per request.
+      expect(info.mock.calls.map(([line]) => String(line)).filter(line => line.includes('the clock moved back'))).toEqual([
+        'bridge: the clock moved back 3600 s; the request limit starts counting again'
+      ]);
+    } finally { clock.mockRestore(); info.mockRestore(); }
+  });
+
+  it('still refuses more than 900 requests inside one minute, and allows them again the next minute', async () => {
+    await pair();
+    const real = Date.now();
+    let now = real;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      let refused = 0;
+      for (let index = 0; index < 930; index += 1) if ((await request('GET', '/status')).status === 429) refused += 1;
+      expect(refused).toBeGreaterThan(0);
+      now += 61_000;
+      expect((await request('GET', '/status')).status).toBe(200);
+    } finally { clock.mockRestore(); }
+  });
+
   it('logs only bounded close-outbox decision codes and only once per extension report', async () => {
     await pair();
     const logger = await import('../src/main/logger.js');

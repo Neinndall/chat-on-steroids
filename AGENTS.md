@@ -490,6 +490,11 @@ Unlike a new worker, a wake whose model the picker cannot confirm is still typed
 step `model-unconfirmed` and the bridge logs which model it could not confirm. A Compact & Resume does the
 same (2026-11-01: an abandoned resume stopped its chat for good); its new chat then tries the model once more
 (`publishBootstrapSelection`).
+A bootstrap's model choice that ChatGPT takes back as the picker closes (receipt `failure=changed`,
+`failedPhase=close`, #2085) is tried once more, like an announcement over the picker: at most two attempts
+(receipt `attempt` 1 and 2), only for that outcome, and the picker read after the second close is still the only
+proof. Only a readable picker showing a different choice than the one selected counts: an unreadable, unavailable,
+mid-selection or unclosed picker, and a native reasoning control that disagrees with a picker that held, are not retried. Input sends keep one attempt.
 An effort-only request (no model) keeps ChatGPT's current model: `selectModelSettings` rounds the
 effort within that model only and never moves to another model offering the effort; with the current
 model unreadable it confirms nothing.
@@ -5362,6 +5367,17 @@ the countdown to the incident's existing five-minute end, even without another u
 That row remains visible and says awaiting attribution/check unless the original second-attempt
 conditions already permit a reload. Its label then names the reload without changing its schedule.
 Exact MCP proof removes only its chat; later chats stay out.
+
+The optional `sessions.checkWebChatTitles` setting defaults off. Opening a manually named
+chat's menu uses `sessions:checkWebTitle` and only shows a confirmed mismatch below Rename.
+The check compares the app's manual name with a freshly confirmed title in the
+active tab of the selected paired browser. One in-memory nonce is offered in `POST /status` and
+settled by that browser's `POST /browser/web-chat-title` response. The bridge checks the built-in
+host or the external browser engine and paired browser ID. The document must still own the exact
+conversation, and the title must agree with the visible navigation label or its fallback attribute.
+Conflicting title evidence, a changed tab, a retired document or a changed local name or binding
+yields an unavailable result. Turning the setting off or changing browser cancels a pending check
+and clears the open menu's notice. No provider API calls, title writes or title cache are introduced.
 
 Session metadata owns `titleSource` (authored fallback, provider, manual). The preview uses only
 the first authored user message, at one 80-character bound; injected instructions/AGENTS frames
