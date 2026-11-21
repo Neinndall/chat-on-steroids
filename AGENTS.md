@@ -490,6 +490,11 @@ Unlike a new worker, a wake whose model the picker cannot confirm is still typed
 step `model-unconfirmed` and the bridge logs which model it could not confirm. A Compact & Resume does the
 same (2026-11-01: an abandoned resume stopped its chat for good); its new chat then tries the model once more
 (`publishBootstrapSelection`).
+A bootstrap's model choice that ChatGPT takes back as the picker closes (receipt `failure=changed`,
+`failedPhase=close`, #2085) is tried once more, like an announcement over the picker: at most two attempts
+(receipt `attempt` 1 and 2), only for that outcome, and the picker read after the second close is still the only
+proof. Only a readable picker showing a different choice than the one selected counts: an unreadable, unavailable,
+mid-selection or unclosed picker, and a native reasoning control that disagrees with a picker that held, are not retried. Input sends keep one attempt.
 An effort-only request (no model) keeps ChatGPT's current model: `selectModelSettings` rounds the
 effort within that model only and never moves to another model offering the effort; with the current
 model unreadable it confirms nothing.
@@ -571,6 +576,15 @@ grouped under their folder, written once, as `<entry>: /<id> — description` (d
 one closing line saying the user can pick them with `/`.
 `skill-package.ts` stages resource copies and publishes SKILL.md last; the existing serialized
 managed-library owner controls imports and removals. Scripts/assets remain inert resources.
+GitHub Skill import (`skill-github.ts`) resolves a public repository, folder or SKILL.md link to
+an exact commit before reading its tree. A single unambiguous nested Skill may be selected from
+a repository-root link; multiple candidates require an explicit folder. Import, linking and
+updates share a bound of 256 regular files, 12 directories, 10 nested levels and 32 MiB per
+package; excessive, unsafe, linked or incomplete trees fail closed. Resources are downloaded
+from commit-pinned raw URLs and verified against Git blob hashes before publication. A locally
+linked Skill keeps its own ID and existing files; the recorded origin revision describes those
+local files until an explicit update replaces them. Updates compare whole-package revisions,
+preserve local edits and swap through the managed-library owner.
 When `CODEX_HOME` has a plugin cache (approved or as a user Skill area), that same read-only
 catalog may project Skills from the last `codex plugin list --json` installed/enabled snapshot.
 Only explicit `skills:library` inspection may create or refresh that runtime snapshot; session
