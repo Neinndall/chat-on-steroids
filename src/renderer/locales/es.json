@@ -4127,5 +4127,8 @@
   "Steered active turn": "Redirigió el turno activo",
   "Worked for {0}{1}s · steered": "Trabajó durante {0}{1}s · redirigido",
   "Sync manual chat titles to ChatGPT": "Sincronizar títulos manuales de chat con ChatGPT",
-  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Enviar a ChatGPT Web los títulos que renombres aquí (incluso al usar Compactar y continuar), salvo que ChatGPT ya tenga un título más reciente."
+  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Enviar a ChatGPT Web los títulos que renombres aquí (incluso al usar Compactar y continuar), salvo que ChatGPT ya tenga un título más reciente.",
+  "Check ChatGPT titles": "Comprobar títulos en ChatGPT",
+  "Show a notice in the chat menu when the open ChatGPT chat has a different title.": "Muestra un aviso en el menú si el chat abierto en ChatGPT tiene otro título.",
+  "ChatGPT title differs": "El título difiere en ChatGPT"
 }

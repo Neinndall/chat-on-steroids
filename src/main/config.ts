@@ -112,7 +112,8 @@ const DEFAULT_SESSIONS: SessionSettings = {
   // produce: the red line would move the first time anyone opened the panel and saved.
   limitTokens: Math.round((DEFAULT_CONTEXT_WINDOW * 4) / 3),
   storageLimitGiB: DEFAULT_RECORDING_STORAGE_GIB,
-  syncManualChatTitles: false
+  syncManualChatTitles: false,
+  checkWebChatTitles: false
 };
 
 /**
@@ -497,7 +498,11 @@ const configSchema = z.object({
         .default(DEFAULT_SESSIONS.advisoryTokens),
       limitTokens: z.number().int().min(10_000).max(4_000_000).optional().default(DEFAULT_SESSIONS.limitTokens),
       storageLimitGiB: recordingStorageLimit.catch(DEFAULT_RECORDING_STORAGE_GIB),
-      syncManualChatTitles: z.boolean().optional().default(DEFAULT_SESSIONS.syncManualChatTitles ?? false).catch(DEFAULT_SESSIONS.syncManualChatTitles ?? false)
+      syncManualChatTitles: z.boolean().optional().default(DEFAULT_SESSIONS.syncManualChatTitles ?? false).catch(DEFAULT_SESSIONS.syncManualChatTitles ?? false),
+      checkWebChatTitles: z.boolean().default(false).catch(() => {
+        logWarn('config: repaired invalid Web title check setting (defaulted to off)');
+        return false;
+      })
     })
     // `record` and `retainDays` remain readable for old configs and wire compatibility, but
     // they are no longer user choices. Normalizing here covers disk load, renderer saves,
@@ -507,7 +512,8 @@ const configSchema = z.object({
     .default({
       ...DEFAULT_SESSIONS,
       storageLimitGiB: DEFAULT_RECORDING_STORAGE_GIB,
-      syncManualChatTitles: DEFAULT_SESSIONS.syncManualChatTitles ?? false
+      syncManualChatTitles: DEFAULT_SESSIONS.syncManualChatTitles ?? false,
+      checkWebChatTitles: false
     }),
   compaction: z
     .object({

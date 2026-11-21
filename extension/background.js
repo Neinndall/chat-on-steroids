@@ -3722,6 +3722,38 @@ async function reloadForExtensionUpdate(offer, liveOpenings, liveCommands, liveS
   }
 }
 
+async function checkWebChatTitle(request) {
+  const id = request?.id;
+  const conversationId = cleanConversationId(request?.conversationId);
+  if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id) || !conversationId) return;
+  const intent = connectionEpoch;
+  let title = null;
+  let reason = 'active-tab-mismatch';
+  try {
+    const active = () => chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const usable = tab => tab && Number.isInteger(tab.id) && !tab.incognito && !tab.pendingUrl &&
+      !tab.discarded && !tab.frozen && tab.status === 'complete' && conversationFromUrl(tab.url) === conversationId;
+    const [tab] = await active();
+    if (usable(tab)) {
+      const documentId = tabDocuments[String(tab.id)];
+      const epoch = tabEpochs[String(tab.id)];
+      reason = 'document-unregistered';
+      if (documentId) {
+        const answer = await tabReply(tab.id, { type: 'clf-check-web-chat-title', conversationId }, { documentId }, 3000);
+        const [current] = await active();
+        reason = 'document-changed';
+        if (usable(current) && current.id === tab.id && current.url === tab.url &&
+            ownsDocument({ tab: tab.id, documentId, navigationEpoch: epoch })) {
+          reason = answer ? 'title-unconfirmed' : 'page-unresponsive';
+          if (typeof answer?.title === 'string' && answer.title.length <= 200) title = answer.title.trim() || null;
+        }
+      }
+    }
+  } catch { reason = 'browser-error'; }
+  if (intent !== connectionEpoch || !token || disconnected) return;
+  await call('/browser/web-chat-title', { method: 'POST', body: JSON.stringify({ id, conversationId, title, ...(title === null ? { reason } : {}) }) });
+}
+
 async function maintainOnce() {
   // The app decides whether there is recovery work; a worker holding no tabs is not a worker
   // with nothing to do, it is the one that has to open the chat the app is owed.
@@ -3774,6 +3806,7 @@ async function maintainOnce() {
   void revealChats(reply.data.reveals).catch(() => undefined);
   void followChat(reply.data.follow).catch(() => undefined);
   void runImageExports(reply.data.imageExports).catch(() => undefined);
+  if (reply.data.webChatTitleCheck) void checkWebChatTitle(reply.data.webChatTitleCheck).catch(() => undefined);
   // Only the app's own list of open messages may call a marked page left over; an older app sends none.
   if (Array.isArray(reply.data.inputOpeningIds)) void closeLeftoverOpenings(observedTabs, liveOpenings,
     new Set((Array.isArray(reply.data.inputs) ? reply.data.inputs : []).map(input => input?.id)),

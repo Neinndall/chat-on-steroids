@@ -3959,5 +3959,8 @@
   "Steered active turn": "Đã điều hướng lượt đang hoạt động",
   "Worked for {0}{1}s · steered": "Đã làm việc trong {0}{1} giây · đã điều hướng",
   "Sync manual chat titles to ChatGPT": "Đồng bộ tiêu đề chat thủ công sang ChatGPT",
-  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Đẩy các tiêu đề bạn đổi tên tại đây (kể cả qua Compact & Resume) lên ChatGPT Web, trừ khi ChatGPT đã có tiêu đề mới hơn."
+  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "Đẩy các tiêu đề bạn đổi tên tại đây (kể cả qua Compact & Resume) lên ChatGPT Web, trừ khi ChatGPT đã có tiêu đề mới hơn.",
+  "Check ChatGPT titles": "Kiểm tra tiêu đề trên ChatGPT",
+  "Show a notice in the chat menu when the open ChatGPT chat has a different title.": "Hiện thông báo trong menu khi cuộc trò chuyện đang mở trên ChatGPT có tiêu đề khác.",
+  "ChatGPT title differs": "Tiêu đề trên ChatGPT khác"
 }

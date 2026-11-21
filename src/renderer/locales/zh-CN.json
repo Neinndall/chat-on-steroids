@@ -3959,5 +3959,8 @@
   "Steered active turn": "已引导当前轮次",
   "Worked for {0}{1}s · steered": "已工作 {0}{1} 秒 · 已引导",
   "Sync manual chat titles to ChatGPT": "将手动聊天标题同步到 ChatGPT",
-  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "将在此处重命名的标题（包括跨“压缩并继续”携带的标题）推送到 ChatGPT Web，除非 ChatGPT 已有更新的标题。"
+  "Push titles you rename here (including across Compact & Resume) to ChatGPT Web, unless ChatGPT already has a newer title.": "将在此处重命名的标题（包括跨“压缩并继续”携带的标题）推送到 ChatGPT Web，除非 ChatGPT 已有更新的标题。",
+  "Check ChatGPT titles": "检查 ChatGPT 标题",
+  "Show a notice in the chat menu when the open ChatGPT chat has a different title.": "如果在 ChatGPT 中打开的聊天使用了不同的标题，则在聊天菜单中显示提示。",
+  "ChatGPT title differs": "ChatGPT 标题不同"
 }

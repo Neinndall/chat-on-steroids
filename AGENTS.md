@@ -5354,6 +5354,17 @@ That row remains visible and says awaiting attribution/check unless the original
 conditions already permit a reload. Its label then names the reload without changing its schedule.
 Exact MCP proof removes only its chat; later chats stay out.
 
+The optional `sessions.checkWebChatTitles` setting defaults off. Opening a manually named
+chat's menu uses `sessions:checkWebTitle` and only shows a confirmed mismatch below Rename.
+The check compares the app's manual name with a freshly confirmed title in the
+active tab of the selected paired browser. One in-memory nonce is offered in `POST /status` and
+settled by that browser's `POST /browser/web-chat-title` response. The bridge checks the built-in
+host or the external browser engine and paired browser ID. The document must still own the exact
+conversation, and the title must agree with the visible navigation label or its fallback attribute.
+Conflicting title evidence, a changed tab, a retired document or a changed local name or binding
+yields an unavailable result. Turning the setting off or changing browser cancels a pending check
+and clears the open menu's notice. No provider API calls, title writes or title cache are introduced.
+
 Session metadata owns `titleSource` (authored fallback, provider, manual). The preview uses only
 the first authored user message, at one 80-character bound; injected instructions/AGENTS frames
 never become preview text. `session/title.ts` supplies presentation and legacy recognition;
